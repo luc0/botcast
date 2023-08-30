@@ -23,13 +23,53 @@
 </body>
 
 <script type="text/javascript">
+    // Config
     const config = {
-        responsesMaxLength: 8,
+        responsesMaxLength: 20,
         responsesMinLength: 1,
         temperature: 0.7,
         maxTokens: 2048
     }
 
+    let conversationHistory = ''
+    let personTalking = 'Diego'
+    let lastSaid = ''
+
+    // Models
+    const actorDiego = {
+        base: 'Vos sos Diego y estas hablando con Mónica. Tu objetivo es generar conversación, aveces preguntando, contando algo, preguntando algo muy especifico o inesperado, rara vez tirar un chiste. Nunca usás emojis.',
+        personality: [
+            'directo',
+            'haces humor inteligente',
+        ],
+        emotion: 'calmado'
+    }
+
+    const actorMonica = {
+        base: 'Vos sos Mónica y estas hablando con Diego. Tu objetivo es generar conversación. aveces preguntando, contando algo, preguntando algo muy especifico o inesperado, rara vez tirar un chiste. Nunca usás emojis.',
+        personality: [
+            'hablas con lunfardo',
+            'no tenes un nivel alto de educación',
+            'expresas tus sentimientos de amor hacia las personas'
+            // 'sos grosera',
+            // 'dudas mucho de lo que decis',
+            // 'le gusta usar analogias para explicar',
+            // 'siempre esta en desacuerdo con Diego',
+            // 'No cree nada de lo que dice Diego'
+        ],
+        emotion: 'calmada'
+    }
+
+    const actorGuts = {
+        base: `
+            Imagina que sos una persona corriente.
+            Con los siguientes rasgos: {PERSONALITY}
+            Decime en una sola palabra que emoción te genera si te dijeran lo siguiente:
+            {TEXT_TO_REACT}
+        `
+    }
+
+    // Context
     const initContext = `
         Sos un locutor de un podcast llamado BotCast.
         Lo siguiente que te describo es el contexto que tenes que tener en cuenta, pero no es algo que tengas que decir:
@@ -45,31 +85,8 @@
         Ni mónica ni Diego repiten palabras o frases que dijeron la última vez.
     `
 
-
-    const diegoInitContext = `Vos sos Diego y estas hablando con Mónica. Tu objetivo es generar conversación, aveces preguntando, contando algo, preguntando algo muy especifico o inesperado, rara vez tirar un chiste.
-
-        `
-    // Siempre al final de tu dialogo entre parentesis mencioná cuál es la última palabra exacta que dijo mónica, si es que dijo alguna.
-    // SIEMPRE Al final de tu dialogo, valora del 1 al 10 que tan agresiva crees que fue mónica en su último dialogo, y aclará que palabra utilizó la cual suena agresiva y porque.
-    //     Tu personalidad es:
-    //         directo, haces humor inteligente,
-    //         el 50% de las veces sos sarcastico,
-    //         el 30% de las veces transmitis una opinion controvertida
-    //         aveces estas de acuerdo con lo que dice Mónica, otras veces dudas y otras veces estas en desacuerdo.
-    // `
-    const monicaInitContext = `Vos sos Mónica y estas hablando con Diego. Tu objetivo es generar conversación. aveces preguntando, contando algo, preguntando algo muy especifico o inesperado, rara vez tirar un chiste.
-        Tu personalidad es:
-            hablas con lunfardo, no tenes un nivel alto de educación,
-            sos grosera, dudas mucho de lo que decis
-            le gusta usar analogias para explicar,
-            siempre esta en desacuerdo con Diego.
-            No cree nada de lo que dice Diego.
-    `
-
-    let conversationHistory = ''
-    let personTalking = 'Diego'
-    // const initContext = 'Simulá que sos un locutor de un podcast y dale la bienvenida a los oyentes en una oración. Son 2 personas vos sos Diego y la otra persona es Mónica.'
-    // const initContext = 'Son 2 personas hablando vos sos Diego y la otra persona es Mónica.'
+    let diegoInitContext = buildDiegoContext()
+    let monicaInitContext = buildMonicaContext()
 
     window.onload = async function() {
         $( "#start" ).on( "click", initPodcast);
@@ -97,27 +114,25 @@
             start()
 
             function start() {
-                let lastSaid = initContext + diegoInitContext
+                lastSaid = initContext + diegoInitContext
                 conversationHistory = 'Teniendo como contexto que hubo una conversación previa entre Diego y Mónica, la cual pondré un signo @ en donde termina, no se debe mencionar: '
 
                 talk(diegoVoice, lastSaid + '')
 
                 diegoVoice.onend = function () {
                     personTalking = 'Mónica'
-                    console.log('talk instruction:', monicaInitContext + conversationHistory + '. FIN')
+                    let monicaInitContext = buildMonicaContext()
                     talk(monicaVoice, monicaInitContext + conversationHistory + '@')
                 }
 
                 monicaVoice.onend = function () {
                     personTalking = 'Diego'
-                    console.log('talk instruction:', diegoInitContext + conversationHistory + '. FIN')
+                    let diegoInitContext = buildDiegoContext()
                     talk(diegoVoice, diegoInitContext + conversationHistory + '@')
                 }
 
                 function talk(person, context) {
                     let currentResponsesLength = Math.ceil(Math.random() * config.responsesMaxLength + config.responsesMinLength)
-                    console.log('currentResponsesLength', currentResponsesLength)
-                    console.log('conversacion:', conversationHistory)
 
                     $.ajax({
                         url: "https://api.openai.com/v1/chat/completions",
@@ -138,6 +153,34 @@
                         const answer = res.choices[0].message.content
                         updateConversationAndSpeak(answer, person)
                         addDialogToUI(personTalking, answer)
+                        runEmotionAnalizer(answer) // necesita correr updateConversationAndSpeak para actualizar lastSaid.
+                    });
+                }
+
+                function runEmotionAnalizer (textToReact) {
+                    const actorListening = getActorListeningByName(personTalking)
+                    const gutsContext = buildGutsContext(actorListening, textToReact)
+                    console.log('gutsContext', gutsContext, personTalking)
+
+                    $.ajax({
+                        url: "https://api.openai.com/v1/chat/completions",
+                        method: 'POST',
+                        headers: {"Content-Type": "application/json", "Authorization": "Bearer {{env('CHAT_GPT_KEY')}}"},
+                        data: JSON.stringify({
+                            "model": "gpt-3.5-turbo",
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": gutsContext
+                                }
+                            ],
+                            "temperature": config.temperature,
+                            "max_tokens": config.maxTokens
+                        })
+                    }).done(function (res) {
+                        const emotion = res.choices[0].message.content
+                        actorListening.emotion = emotion
+                        console.log('emotion', actorListening.emotion)
                     });
                 }
             }
@@ -145,7 +188,8 @@
     }
 
     function formatToDialog(person, text) {
-        return '- ' + person + ': ' + text + '\n'
+        const emotion = getActorTalkingByName(personTalking).emotion
+        return '- ' + person + ': ' + text + ` (${emotion})` + '\n'
     }
 
     function addDialogToUI(personTalking, lastSaid) {
@@ -163,8 +207,37 @@
         lastSaid = answer;
 
         // talk
-        person.text = answer;
+        person.text = answer
         speechSynthesis.speak(person);
+    }
+
+    function buildDiegoContext() {
+        return actorDiego.base
+            + ' Tu personalidad es: ' + actorDiego.personality.join(', ') + '.'
+            + ' La emoción que estas sintiendo es: ' + actorDiego.emotion + '.'
+    }
+
+    function buildMonicaContext() {
+        return actorMonica.base
+            + ' Tu personalidad es: ' + actorMonica.personality.join(', ') + '.'
+            + ' La emoción que estas sintiendo es: ' + actorMonica.emotion + '.'
+    }
+
+    function buildGutsContext(actorListening, textToReact) {
+        if (!textToReact) return
+        const personality = actorListening.personality.join(', ') + '.'
+
+        return actorGuts.base
+            .replace('{PERSONALITY}', personality)
+            .replace('{TEXT_TO_REACT}', textToReact)
+    }
+
+    function getActorTalkingByName() {
+        return personTalking === 'Diego' ? actorDiego : actorMonica
+    }
+
+    function getActorListeningByName() {
+        return personTalking === 'Diego' ? actorMonica : actorDiego
     }
 </script>
 </html>
